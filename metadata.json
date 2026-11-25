@@ -1,0 +1,6 @@
+{
+  "name": "ForgeAI",
+  "description": "Autonomous AI agent factory that interviews requesters, audits document groundability, generates declarative agents, runs 20+ automated evals, optimizes in targeted loops, and verifies answers with a Trust Ledger.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
