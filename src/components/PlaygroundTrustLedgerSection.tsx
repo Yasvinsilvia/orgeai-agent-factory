@@ -259,12 +259,20 @@ export function PlaygroundTrustLedgerSection({
 
           {activeLedger ? (
             <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <TrustBadge status={activeLedger.grounding_status} />
                 <span className="font-mono text-slate-500 tabular-nums">
-                  Relevance: {activeLedger.evidence_relevance} · {activeLedger.latency_ms}ms
+                  {typeof activeLedger.confidence_score === 'number'
+                    ? `Conf: ${activeLedger.confidence_score}% · `
+                    : ''}
+                  Rel: {activeLedger.evidence_relevance} · {activeLedger.latency_ms}ms
                 </span>
               </div>
+              {activeLedger.calibration_reason && (
+                <div className="text-[11px] text-slate-500 font-mono">
+                  Calibration: {activeLedger.calibration_reason}
+                </div>
+              )}
 
               <div className="space-y-1">
                 <div className="font-semibold text-slate-700">User Question</div>
@@ -298,9 +306,9 @@ export function PlaygroundTrustLedgerSection({
               </div>
 
               {activeLedger.deterministic_checks && (
-                <div className="border-t border-slate-100 pt-3 grid grid-cols-2 gap-3 text-[11px]">
+                <div className="border-t border-slate-100 pt-3 grid grid-cols-3 gap-3 text-[11px]">
                   <div>
-                    <span className="font-semibold text-slate-700">Ghost Citation Check: </span>
+                    <span className="font-semibold text-slate-700">Ghost Citations: </span>
                     <span
                       className={
                         activeLedger.deterministic_checks.ghost_citations.length === 0
@@ -325,6 +333,20 @@ export function PlaygroundTrustLedgerSection({
                       {activeLedger.deterministic_checks.ungrounded_numbers.length === 0
                         ? 'Verified'
                         : `${activeLedger.deterministic_checks.ungrounded_numbers.length} unverified`}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="font-semibold text-slate-700">Contradictions: </span>
+                    <span
+                      className={
+                        (activeLedger.deterministic_checks.contradictions?.length ?? 0) === 0
+                          ? 'text-emerald-700 font-medium'
+                          : 'text-red-700 font-medium'
+                      }
+                    >
+                      {(activeLedger.deterministic_checks.contradictions?.length ?? 0) === 0
+                        ? '0 caught'
+                        : `${activeLedger.deterministic_checks.contradictions?.length} flagged`}
                     </span>
                   </div>
                 </div>

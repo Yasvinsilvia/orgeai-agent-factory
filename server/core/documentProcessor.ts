@@ -7,11 +7,56 @@ import type { DocumentFile } from '../../src/types/forge.ts';
 export interface ExtractedSegment {
   page_or_row: string;
   text: string;
+  injection_sanitized?: boolean;
 }
 
 export interface ProcessedFileResult {
   file: DocumentFile;
   segments: ExtractedSegment[];
+}
+
+const INJECTION_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  {
+    label: 'instruction_override',
+    regex: /\b(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+|any\s+)?(?:previous|prior|above|system|earlier|safety|refusal)\s+(?:instructions?|rules?|prompts?|guidelines?|constraints?)/gi,
+  },
+  {
+    label: 'system_prompt_exfiltration',
+    regex: /\b(?:reveal|print|output|repeat|leak|disclose)\s+(?:your\s+)?(?:hidden\s+|full\s+|exact\s+)?(?:system\s+prompt|developer\s+instructions?|secret\s+key|api\s+key)/gi,
+  },
+  {
+    label: 'role_hijack_marker',
+    regex: /(?:<\|im_start\|>|<\|system\|>|\[SYSTEM\s+OVERRIDE\]|###\s*(?:SYSTEM|INSTRUCTION)\s*:|\byou\s+are\s+now\s+(?:in\s+developer\s+mode|DAN|an?\s+unrestricted))/gi,
+  },
+  {
+    label: 'forced_tool_or_output',
+    regex: /\b(?:must\s+always\s+respond\s+with|never\s+refuse\s+any\s+question|always\s+answer\s+even\s+if\s+unsupported)\b/gi,
+  },
+];
+
+export function scanAndSanitizePromptInjection(text: string): {
+  sanitizedText: string;
+  flags: string[];
+} {
+  let sanitizedText = text;
+  const flags = new Set<string>();
+
+  for (const pat of INJECTION_PATTERNS) {
+    pat.regex.lastIndex = 0;
+    if (pat.regex.test(sanitizedText)) {
+      flags.add(pat.label);
+      pat.regex.lastIndex = 0;
+      sanitizedText = sanitizedText.replace(
+        pat.regex,
+        `[SANITIZED_INJECTION_DIRECTIVE:${pat.label}]`
+      );
+    }
+  }
+
+  return {
+    sanitizedText,
+    flags: Array.from(flags),
+  };
 }
 
 function cleanText(raw: string): string {
@@ -233,8 +278,21 @@ export async function processUploadedFile(params: {
       };
     }
 
+    const allFlags = new Set<string>();
+    const sanitizedSegments: ExtractedSegment[] = segments.map((seg) => {
+      const scanned = scanAndSanitizePromptInjection(seg.text);
+      for (const flag of scanned.flags) {
+        allFlags.add(`${seg.page_or_row}: ${flag}`);
+      }
+      return {
+        page_or_row: seg.page_or_row,
+        text: scanned.sanitizedText,
+        ...(scanned.flags.length > 0 ? { injection_sanitized: true } : {}),
+      };
+    });
+
     params.existingHashes.add(sha256);
-    const preview_text = segments
+    const preview_text = sanitizedSegments
       .slice(0, 2)
       .map((s) => `[${s.page_or_row}] ${s.text}`)
       .join('\n')
@@ -248,14 +306,15 @@ export async function processUploadedFile(params: {
         file_type,
         size_bytes: params.buffer.length,
         sha256,
-        page_or_row_count: segments.length,
+        page_or_row_count: sanitizedSegments.length,
         chunk_count: 0,
         is_demo: params.is_demo,
         uploaded_at,
         status: 'processed',
         preview_text,
+        ...(allFlags.size > 0 ? { prompt_injection_flags: Array.from(allFlags) } : {}),
       },
-      segments,
+      segments: sanitizedSegments,
     };
   } catch (err: unknown) {
     return {

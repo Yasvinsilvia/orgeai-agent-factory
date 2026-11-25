@@ -1,13 +1,22 @@
-import { Download } from 'lucide-react';
-import type { ToolRegistryInfo } from '../lib/api';
+import { useState } from 'react';
+import { Download, RotateCcw } from 'lucide-react';
+import { rollbackAgentVersion, type ToolRegistryInfo } from '../lib/api';
 import type { AgentWorkspaceBundle } from '../types/forge';
 
 interface AgentConfigSectionProps {
   bundle: AgentWorkspaceBundle | null;
   toolRegistry: ToolRegistryInfo[];
+  onBundleUpdated?: (bundle: AgentWorkspaceBundle) => void;
 }
 
-export function AgentConfigSection({ bundle, toolRegistry }: AgentConfigSectionProps) {
+export function AgentConfigSection({
+  bundle,
+  toolRegistry,
+  onBundleUpdated,
+}: AgentConfigSectionProps) {
+  const [rollingBack, setRollingBack] = useState<number | null>(null);
+  const [rollbackError, setRollbackError] = useState<string | null>(null);
+
   if (!bundle) {
     return (
       <div className="bg-white border border-slate-200 rounded-xl p-8 text-sm text-slate-500">
@@ -17,6 +26,21 @@ export function AgentConfigSection({ bundle, toolRegistry }: AgentConfigSectionP
   }
 
   const { agent, groundability, requirements } = bundle;
+  const versions = bundle.versions ?? [];
+
+  async function handleRollback(version: number) {
+    if (!bundle || rollingBack !== null) return;
+    setRollingBack(version);
+    setRollbackError(null);
+    try {
+      const updated = await rollbackAgentVersion(bundle.agent.id, version);
+      onBundleUpdated?.(updated);
+    } catch (err: unknown) {
+      setRollbackError(err instanceof Error ? err.message : 'Rollback failed.');
+    } finally {
+      setRollingBack(null);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -188,6 +212,58 @@ export function AgentConfigSection({ bundle, toolRegistry }: AgentConfigSectionP
           )}
         </div>
       </div>
+
+      {/* Persisted Agent Versions & Rollback */}
+      {versions.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">Agent Version History & Rollback</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Snapshots saved before and after Critic-Optimizer iterations. Restore any prior configuration version cleanly.
+              </p>
+            </div>
+            <span className="text-xs font-mono text-slate-600 tabular-nums">
+              {versions.length} snapshot(s)
+            </span>
+          </div>
+          {rollbackError && <p className="text-xs text-red-600">{rollbackError}</p>}
+          <div className="divide-y divide-slate-100 text-xs">
+            {versions.map((snap) => {
+              const isCurrent = snap.version === agent.version;
+              return (
+                <div key={snap.version} className="py-3 flex flex-wrap items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <div className="font-medium text-slate-900 flex items-center gap-2">
+                      <span className="font-mono">v{snap.version}</span>
+                      {typeof snap.score === 'number' && (
+                        <span className="text-slate-500 font-mono tabular-nums">
+                          · {snap.score}% eval score
+                        </span>
+                      )}
+                      {isCurrent && (
+                        <span className="text-emerald-700 font-semibold">· Active</span>
+                      )}
+                    </div>
+                    <div className="text-slate-600">{snap.reason}</div>
+                  </div>
+                  {!isCurrent && (
+                    <button
+                      type="button"
+                      onClick={() => handleRollback(snap.version)}
+                      disabled={rollingBack !== null}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50 text-xs font-medium text-slate-700 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      {rollingBack === snap.version ? 'Restoring...' : `Restore v${snap.version}`}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

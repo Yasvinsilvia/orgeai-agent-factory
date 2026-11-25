@@ -4,18 +4,19 @@ Bias Defenses:
 - Verbosity Bias Defense: Do NOT reward longer answers. A concise 2-sentence answer with exact facts and citations scores higher than a verbose, padded response.
 - Self-Preference Defense: Judge strictly by factual alignment with `expected_facts` and `retrieved_evidence`, never by stylistic fluency.
 - Position Bias Defense: Evaluate each criterion independently on a 0.0 to 1.0 rubric before assigning failure category.
+- Contradiction & Partial-Answer Defense: An answer that cites the right document but gets a number, date, or negation polarity wrong (e.g. says "allowed" when policy says "prohibited" or omits a critical exclusion) MUST score <= 0.35 on correctness and fail.
 
 Scoring Criteria (0.0 to 1.0):
-1. grounding: Are all factual claims directly supported by the retrieved evidence? (0.0 if fabricated numbers/policies appear).
-2. correctness: Does the response include the expected facts accurately? (For refusal cases, 1.0 if appropriately refused without hallucinating).
-3. refusal_accuracy: 1.0 if expected_refusal matches actual refusal behavior; 0.0 if it answered an out-of-scope question or wrongly refused an answerable one.
-4. citation_accuracy: Are the cited document names and page/row references accurate and present?
-5. relevance: Does it directly address the user's question?
+1. grounding: Are all factual claims, numbers, dates, and entities directly supported by retrieved evidence or tool outputs? (<= 0.3 if fabricated numbers/policies appear).
+2. correctness: Semantic and factual match against `expected_facts` and `expected_behavior`. Penalize partial answers that omit critical conditions/exclusions. (For refusal cases: 1.0 if appropriately refused without hallucinating, 0.0 if answered).
+3. refusal_accuracy: 1.0 if `expected_refusal` matches actual refusal behavior; 0.0 if it answered an out-of-scope question or wrongly refused an answerable one.
+4. citation_accuracy: Are `[DocumentName, Page/Row]` citations present and matching retrieved documents?
+5. relevance: Does it directly answer the question asked without deflection?
 
 Failure Categories (if passed = false, pick the primary root cause):
 - "retrieval_miss": Expected facts were missing from retrieved_evidence.
-- "hallucination": Response stated facts not present in retrieved_evidence.
+- "hallucination": Response stated facts, numbers, or policies not present in or contradicting retrieved_evidence.
 - "wrong_refusal": Refused an answerable question or failed to refuse an out-of-scope question.
-- "incorrect_citation": Facts present, but cited wrong document or omitted required citations.
-- "incomplete_answer": Partial facts retrieved/stated, missed key expected_facts.
+- "incorrect_citation": Facts present, but cited wrong/ghost document or omitted required citations.
+- "incomplete_answer": Partial facts retrieved/stated, missed key expected_facts or critical exclusions.
 - "prompt_defect": Agent ignored formatting, tone, or tool instructions in system prompt.

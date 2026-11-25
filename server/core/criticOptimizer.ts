@@ -2,9 +2,11 @@ import { Type } from '@google/genai';
 import type {
   AgentDefinition,
   DocumentChunk,
+  DocumentFile,
   EvalCaseResult,
   EvalTestCase,
   OptimizationIteration,
+  PipelineIntegrityAudit,
   PromptCandidateResult,
   QualityReport,
   RequirementsSpec,
@@ -24,15 +26,13 @@ export function computeOverallScore(results: EvalCaseResult[]): number {
 
 export function buildPipelineIntegrityAudit(
   agent: AgentDefinition,
-  results: EvalCaseResult[]
-) {
+  results: EvalCaseResult[],
+  documents?: DocumentFile[]
+): PipelineIntegrityAudit {
   let ghost_citations_caught = 0;
   let ungrounded_numbers_caught = 0;
-  const flagged_details: Array<{
-    test_id: string;
-    issue_type: 'ghost_citation' | 'ungrounded_number';
-    detail: string;
-  }> = [];
+  let contradictions_caught = 0;
+  const flagged_details: PipelineIntegrityAudit['flagged_details'] = [];
 
   for (const r of results) {
     const ghosts = detectGhostCitations(r.agent_response, r.retrieved_evidence);
@@ -54,7 +54,22 @@ export function buildPipelineIntegrityAudit(
         detail: `Values not verbatim in retrieved text: ${ungrounded.join(', ')}`,
       });
     }
+    if (r.contradictions_detected && r.contradictions_detected.length > 0) {
+      contradictions_caught += r.contradictions_detected.length;
+      for (const c of r.contradictions_detected) {
+        flagged_details.push({
+          test_id: r.test_id,
+          issue_type: 'contradiction',
+          detail: c,
+        });
+      }
+    }
   }
+
+  const injection_flags_detected = (documents ?? []).reduce(
+    (sum, d) => sum + (d.prompt_injection_flags?.length ?? 0),
+    0
+  );
 
   const descLower = `${agent.description} ${agent.supported_topics.join(' ')}`.toLowerCase();
   const weatherMisattached =
@@ -64,6 +79,8 @@ export function buildPipelineIntegrityAudit(
   return {
     ghost_citations_caught,
     ungrounded_numbers_caught,
+    contradictions_caught,
+    injection_flags_detected,
     tool_hygiene_passed: !weatherMisattached,
     tool_hygiene_note: weatherMisattached
       ? 'Warning: public_weather tool attached without weather intent in agent scope.'
@@ -78,6 +95,7 @@ export function buildQualityReport(params: {
   iterations: OptimizationIteration[];
   tracker: BudgetTracker;
   promptTournament?: PromptCandidateResult[];
+  documents?: DocumentFile[];
 }): QualityReport {
   const total = params.results.length || 1;
   const answerable = params.results.filter((r) => !r.expected_refusal);
@@ -116,7 +134,11 @@ export function buildQualityReport(params: {
     );
   }
 
-  const pipeline_integrity = buildPipelineIntegrityAudit(params.agent, params.results);
+  const pipeline_integrity = buildPipelineIntegrityAudit(
+    params.agent,
+    params.results,
+    params.documents
+  );
 
   return {
     agent_id: params.agent.id,
@@ -219,6 +241,76 @@ export async function runPromptTournament(params: {
   };
 }
 
+export function evaluateOptimizationStepOutcome(
+  prevResults: EvalCaseResult[],
+  nextResults: EvalCaseResult[]
+): {
+  previous_score: number;
+  new_score: number;
+  resolved_count: number;
+  newly_broken_cases: string[];
+  should_accept: boolean;
+  reason: string;
+} {
+  const previous_score = computeOverallScore(prevResults);
+  const new_score = computeOverallScore(nextResults);
+  const prevMap = new Map(prevResults.map((r) => [r.test_id, r]));
+
+  let resolved_count = 0;
+  const newly_broken_cases: string[] = [];
+
+  for (const nr of nextResults) {
+    const pr = prevMap.get(nr.test_id);
+    if (!pr) continue;
+    if (!pr.passed && nr.passed) {
+      resolved_count += 1;
+    } else if (pr.passed && !nr.passed) {
+      newly_broken_cases.push(nr.test_id);
+    }
+  }
+
+  const prevMeanRubric =
+    prevResults.reduce((s, r) => s + r.scores.overall, 0) / Math.max(1, prevResults.length);
+  const nextMeanRubric =
+    nextResults.reduce((s, r) => s + r.scores.overall, 0) / Math.max(1, nextResults.length);
+
+  let should_accept = false;
+  let reason = '';
+
+  if (new_score > previous_score && newly_broken_cases.length <= resolved_count) {
+    should_accept = true;
+    reason = `Accepted: pass rate increased (${previous_score}% -> ${new_score}%), ${resolved_count} resolved, ${newly_broken_cases.length} regression(s).`;
+  } else if (
+    new_score === previous_score &&
+    newly_broken_cases.length === 0 &&
+    nextMeanRubric > prevMeanRubric + 0.005
+  ) {
+    should_accept = true;
+    reason = `Accepted: pass rate held at ${new_score}% with 0 regressions and higher rubric quality (${(
+      prevMeanRubric * 100
+    ).toFixed(1)}% -> ${(nextMeanRubric * 100).toFixed(1)}%).`;
+  } else {
+    should_accept = false;
+    reason =
+      new_score < previous_score
+        ? `Rolled back: score regressed (${previous_score}% -> ${new_score}%).`
+        : newly_broken_cases.length > 0
+        ? `Rolled back: patch introduced ${newly_broken_cases.length} regression(s) (${newly_broken_cases.join(
+            ', '
+          )}) without net improvement.`
+        : `Rolled back: no measurable quality improvement over baseline (${previous_score}%).`;
+  }
+
+  return {
+    previous_score,
+    new_score,
+    resolved_count,
+    newly_broken_cases,
+    should_accept,
+    reason,
+  };
+}
+
 export async function runCriticOptimizerLoop(params: {
   agent: AgentDefinition;
   testCases: EvalTestCase[];
@@ -228,13 +320,14 @@ export async function runCriticOptimizerLoop(params: {
   maxIterations?: number;
   maxTokenBudget?: number;
   onProgress?: (message: string) => void;
+  onVersionSnapshot?: (agent: AgentDefinition, reason: string, score?: number) => void;
 }): Promise<{
   finalAgent: AgentDefinition;
   finalResults: EvalCaseResult[];
   iterations: OptimizationIteration[];
 }> {
   const maxIter = Math.min(3, params.maxIterations ?? 3);
-  const tokenBudget = params.maxTokenBudget ?? 160000;
+  const tokenBudget = params.maxTokenBudget ?? 180000;
   const criticSystem = loadPromptTemplate('critic_prompt.txt');
 
   let currentAgent: AgentDefinition = JSON.parse(JSON.stringify(params.agent));
@@ -247,6 +340,7 @@ export async function runCriticOptimizerLoop(params: {
     tracker: params.tracker,
   });
   let currentScore = computeOverallScore(currentResults);
+  params.onVersionSnapshot?.(currentAgent, 'Baseline evaluation before optimization', currentScore);
 
   const iterations: OptimizationIteration[] = [];
 
@@ -444,36 +538,39 @@ Prescribe MINIMAL, TARGETED patches (do not rewrite the entire prompt). Only adj
       csvSources: params.csvSources,
       tracker: params.tracker,
     });
-    const nextScore = computeOverallScore(nextResults);
-
-    const prevFailedIds = new Set(failed.map((f) => f.test_id));
-    const resolved_count = nextResults.filter((r) => prevFailedIds.has(r.test_id) && r.passed).length;
+    const outcome = evaluateOptimizationStepOutcome(currentResults, nextResults);
 
     iterations.push({
       iteration: iter,
-      previous_score: currentScore,
-      new_score: nextScore,
+      previous_score: outcome.previous_score,
+      new_score: outcome.new_score,
       failures_identified: failed.length,
       failure_breakdown: breakdown,
       exact_changes,
       test_cases_addressed: criticPlan.addressed_test_ids ?? failed.map((f) => f.test_id),
-      resolved_count,
-      notes: criticPlan.diagnosis_summary,
+      resolved_count: outcome.resolved_count,
+      newly_broken_cases: outcome.newly_broken_cases,
+      rolled_back: !outcome.should_accept,
+      notes: `${criticPlan.diagnosis_summary} | ${outcome.reason}`,
       timestamp: new Date().toISOString(),
     });
 
-    // Keep candidate if it improved or held steady; rollback if it regressed
-    if (nextScore >= currentScore) {
+    if (outcome.should_accept) {
       currentAgent = {
         ...candidateAgent,
         version: currentAgent.version + 1,
         updated_at: new Date().toISOString(),
       };
       currentResults = nextResults;
-      currentScore = nextScore;
+      currentScore = outcome.new_score;
+      params.onVersionSnapshot?.(
+        currentAgent,
+        `Optimization Iteration ${iter}: ${outcome.reason}`,
+        currentScore
+      );
     } else {
       params.tracker.early_stopped = true;
-      params.tracker.stop_reason = `Iteration ${iter} regressed (${currentScore}% -> ${nextScore}%); rolled back and stopped.`;
+      params.tracker.stop_reason = outcome.reason;
       break;
     }
 

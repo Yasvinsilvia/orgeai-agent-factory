@@ -33,6 +33,7 @@ export interface DocumentFile {
   status: 'processed' | 'error' | 'duplicate_skipped';
   error_message?: string;
   preview_text: string;
+  prompt_injection_flags?: string[];
 }
 
 export interface DocumentChunk {
@@ -44,6 +45,7 @@ export interface DocumentChunk {
   source_text: string;
   char_count: number;
   embedding?: number[];
+  injection_sanitized?: boolean;
 }
 
 export interface RetrievedChunk {
@@ -159,6 +161,8 @@ export interface EvalCaseResult {
   failure_category: FailureCategory;
   failure_explanation: string;
   tool_calls_used: string[];
+  contradictions_detected?: string[];
+  deterministic_penalties?: string[];
 }
 
 export interface TargetedChange {
@@ -179,6 +183,8 @@ export interface OptimizationIteration {
   exact_changes: TargetedChange[];
   test_cases_addressed: string[];
   resolved_count: number;
+  newly_broken_cases?: string[];
+  rolled_back?: boolean;
   notes: string;
   timestamp: string;
 }
@@ -197,7 +203,11 @@ export interface BudgetMetrics {
   total_llm_calls: number;
   total_embedding_calls: number;
   total_latency_ms: number;
+  avg_latency_ms?: number;
   estimated_tokens: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  estimated_cost_usd?: number;
   early_stopped: boolean;
   stop_reason?: string;
 }
@@ -205,11 +215,13 @@ export interface BudgetMetrics {
 export interface PipelineIntegrityAudit {
   ghost_citations_caught: number;
   ungrounded_numbers_caught: number;
+  contradictions_caught?: number;
+  injection_flags_detected?: number;
   tool_hygiene_passed: boolean;
   tool_hygiene_note: string;
   flagged_details: Array<{
     test_id: string;
-    issue_type: 'ghost_citation' | 'ungrounded_number';
+    issue_type: 'ghost_citation' | 'ungrounded_number' | 'contradiction';
     detail: string;
   }>;
 }
@@ -277,10 +289,13 @@ export interface TrustLedgerEntry {
   retrieved_evidence: RetrievedChunk[];
   evidence_relevance: number;
   grounding_status: TrustStatus;
+  confidence_score?: number;
+  calibration_reason?: string;
   unsupported_claims: string[];
   deterministic_checks?: {
     ghost_citations: string[];
     ungrounded_numbers: string[];
+    contradictions?: string[];
   };
   tool_executions: ToolExecutionLog[];
   latency_ms: number;
@@ -305,6 +320,14 @@ export interface RegressionResult {
   unchanged: number;
 }
 
+export interface AgentVersionSnapshot {
+  version: number;
+  created_at: string;
+  reason: string;
+  score?: number;
+  agent: AgentDefinition;
+}
+
 export interface AgentWorkspaceBundle {
   agent: AgentDefinition;
   requirements: RequirementsSpec;
@@ -318,6 +341,7 @@ export interface AgentWorkspaceBundle {
   trust_ledger: TrustLedgerEntry[];
   regression_result?: RegressionResult | null;
   baseline_comparison?: HumanBaselineComparison | null;
+  versions?: AgentVersionSnapshot[];
 }
 
 export interface DashboardMetrics {

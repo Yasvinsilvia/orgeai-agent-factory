@@ -106,6 +106,21 @@ export function OptimizationHistorySection({ bundle }: OptimizationHistorySectio
                     </span>
                   </div>
                   <div>
+                    Regressions:{' '}
+                    <span
+                      className={`font-semibold tabular-nums ${
+                        (iter.newly_broken_cases?.length ?? 0) > 0 ? 'text-red-700' : 'text-slate-700'
+                      }`}
+                    >
+                      {iter.newly_broken_cases?.length ?? 0}
+                    </span>
+                  </div>
+                  {iter.rolled_back && (
+                    <div className="font-semibold text-amber-700">
+                      Patch Rolled Back (Safety Guard)
+                    </div>
+                  )}
+                  <div>
                     Failure Breakdown:{' '}
                     <span className="font-mono">
                       {Object.entries(iter.failure_breakdown)

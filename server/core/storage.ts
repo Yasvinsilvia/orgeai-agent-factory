@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import type {
   AgentDefinition,
+  AgentVersionSnapshot,
   AgentWorkspaceBundle,
   DashboardMetrics,
   DocumentChunk,
@@ -31,6 +32,7 @@ const SUBDIRS = [
   'groundability',
   'regressions',
   'baselines',
+  'versions',
 ] as const;
 
 export function ensureDataDirectories() {
@@ -129,6 +131,65 @@ export function loadAgentDefinition(agentId: string): AgentDefinition | null {
   );
 }
 
+export function loadAgentVersions(agentId: string): AgentVersionSnapshot[] {
+  const saved = readJsonSafe<AgentVersionSnapshot[]>(
+    path.join(ROOT_DATA_DIR, 'versions', `${agentId}_versions.json`),
+    []
+  );
+  if (saved.length > 0) return saved;
+  const current = loadAgentDefinition(agentId);
+  if (!current) return [];
+  const report = loadQualityReport(agentId);
+  return [
+    {
+      version: current.version,
+      created_at: current.updated_at,
+      reason: 'Active persisted agent configuration',
+      score: report?.overall_score,
+      agent: current,
+    },
+  ];
+}
+
+export function saveAgentVersionSnapshot(
+  agent: AgentDefinition,
+  reason: string,
+  score?: number
+): AgentVersionSnapshot[] {
+  const existing = readJsonSafe<AgentVersionSnapshot[]>(
+    path.join(ROOT_DATA_DIR, 'versions', `${agent.id}_versions.json`),
+    []
+  );
+  const snapshot: AgentVersionSnapshot = {
+    version: agent.version,
+    created_at: new Date().toISOString(),
+    reason,
+    ...(typeof score === 'number' ? { score } : {}),
+    agent: JSON.parse(JSON.stringify(agent)),
+  };
+  const filtered = existing.filter((s) => s.version !== agent.version);
+  const next = [...filtered, snapshot].sort((a, b) => a.version - b.version);
+  writeJsonSafe(path.join(ROOT_DATA_DIR, 'versions', `${agent.id}_versions.json`), next);
+  return next;
+}
+
+export function rollbackAgentToVersion(
+  agentId: string,
+  targetVersion: number
+): AgentDefinition | null {
+  const versions = loadAgentVersions(agentId);
+  const found = versions.find((v) => v.version === targetVersion);
+  if (!found) return null;
+  const restored: AgentDefinition = {
+    ...JSON.parse(JSON.stringify(found.agent)),
+    version: found.version,
+    status: 'ready',
+    updated_at: new Date().toISOString(),
+  };
+  saveAgentDefinition(restored);
+  return restored;
+}
+
 export function saveEvalDataset(agentId: string, cases: EvalTestCase[]) {
   writeJsonSafe(path.join(ROOT_DATA_DIR, 'evaluations', `${agentId}_dataset.json`), cases);
 }
@@ -225,6 +286,7 @@ export function loadWorkspaceBundle(agentId: string): AgentWorkspaceBundle | nul
   const trust_ledger = loadTrustLedger(agentId);
   const regression_result = loadRegressionResult(agentId);
   const baseline_comparison = loadBaselineComparison(agentId);
+  const versions = loadAgentVersions(agentId);
 
   return {
     agent,
@@ -239,6 +301,7 @@ export function loadWorkspaceBundle(agentId: string): AgentWorkspaceBundle | nul
     trust_ledger,
     regression_result,
     baseline_comparison,
+    versions,
   };
 }
 
@@ -267,6 +330,7 @@ export function deleteAgentWorkspace(agentId: string) {
     path.join(ROOT_DATA_DIR, 'trust_ledger', `${agentId}.json`),
     path.join(ROOT_DATA_DIR, 'regressions', `${agentId}.json`),
     path.join(ROOT_DATA_DIR, 'baselines', `${agentId}.json`),
+    path.join(ROOT_DATA_DIR, 'versions', `${agentId}_versions.json`),
   ];
   for (const p of pathsToRemove) {
     if (fs.existsSync(p)) fs.unlinkSync(p);

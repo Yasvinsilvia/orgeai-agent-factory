@@ -37,7 +37,7 @@ export async function runGroundabilityGuard(params: {
         similarity_threshold: 0.15,
       },
       tracker: params.tracker,
-      useEmbeddings: false,
+      useEmbeddings: true,
     });
     evidenceBundle.push({
       topic,

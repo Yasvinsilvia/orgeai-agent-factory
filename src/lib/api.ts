@@ -187,6 +187,17 @@ export async function compareWithHumanBaseline(
   return handleJson(res);
 }
 
+export async function rollbackAgentVersion(
+  agentId: string,
+  version: number
+): Promise<AgentWorkspaceBundle> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(agentId)}/rollback/${encodeURIComponent(String(version))}`,
+    { method: 'POST' }
+  );
+  return handleJson<AgentWorkspaceBundle>(res);
+}
+
 export async function deleteAgent(agentId: string): Promise<void> {
   const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`, {
     method: 'DELETE',

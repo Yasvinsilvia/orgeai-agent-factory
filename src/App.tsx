@@ -235,7 +235,11 @@ export default function App() {
                 />
               )}
               {section === 'config' && (
-                <AgentConfigSection bundle={activeBundle} toolRegistry={toolRegistry} />
+                <AgentConfigSection
+                  bundle={activeBundle}
+                  toolRegistry={toolRegistry}
+                  onBundleUpdated={handleBundleUpdated}
+                />
               )}
               {section === 'evaluations' && (
                 <EvaluationLabSection

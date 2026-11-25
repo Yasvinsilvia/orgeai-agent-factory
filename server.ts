@@ -27,7 +27,7 @@ import { BudgetTracker } from './server/core/gemini.ts';
 import { runGroundabilityGuard } from './server/core/groundability.ts';
 import { generateClarificationQuestions, synthesizeRequirementsSpec } from './server/core/intake.ts';
 import { evaluateAgentOnSuite } from './server/core/judge.ts';
-import { buildChunksFromSegments, indexChunksWithEmbeddings } from './server/core/retrieval.ts';
+import { buildChunksFromSegments, ensureChunkEmbeddings, indexChunksWithEmbeddings } from './server/core/retrieval.ts';
 import { seedInitialDemosIfMissing } from './server/core/seedDemos.ts';
 import {
   appendTrustLedgerEntry,
@@ -36,6 +36,7 @@ import {
   ensureDataDirectories,
   listAllWorkspaceBundles,
   loadAgentDefinition,
+  loadAgentVersions,
   loadChunks,
   loadCsvSourcesForAgent,
   loadDocumentsMetadata,
@@ -45,7 +46,9 @@ import {
   loadQualityReport,
   loadRequirements,
   loadWorkspaceBundle,
+  rollbackAgentToVersion,
   saveAgentDefinition,
+  saveAgentVersionSnapshot,
   saveBaselineComparison,
   saveChunks,
   saveDocumentsMetadata,
@@ -355,6 +358,9 @@ async function startServer() {
         tracker,
         maxIterations,
         maxTokenBudget,
+        onVersionSnapshot: (snapAgent, reason, score) => {
+          saveAgentVersionSnapshot(snapAgent, reason, score);
+        },
       });
 
       saveAgentDefinition(opt.finalAgent);
@@ -367,6 +373,7 @@ async function startServer() {
         iterations: opt.iterations,
         tracker,
         promptTournament: tournamentResults,
+        documents,
       });
       saveQualityReport(agentId, qualityReport);
 
@@ -401,22 +408,31 @@ async function startServer() {
       const agentId = req.params.id;
       const agent = loadAgentDefinition(agentId);
       const evalCases = loadEvalDataset(agentId);
-      const chunks = loadChunks(agentId);
+      const documents = loadDocumentsMetadata(agentId);
+      const rawChunks = loadChunks(agentId);
       if (!agent || evalCases.length === 0) {
         res.status(404).json({ error: 'Agent or evaluation suite not found.' });
         return;
       }
       const csvSources = loadCsvSourcesForAgent(agentId);
       const tracker = new BudgetTracker();
+      const ensured = await ensureChunkEmbeddings(rawChunks, tracker);
+      if (ensured.updated) {
+        saveChunks(agentId, ensured.chunks);
+      }
+
       const maxIterations = Math.min(3, Math.max(1, Number(req.body.max_iterations ?? 2)));
 
       const opt = await runCriticOptimizerLoop({
         agent,
         testCases: evalCases,
-        chunks,
+        chunks: ensured.chunks,
         csvSources,
         tracker,
         maxIterations,
+        onVersionSnapshot: (snapAgent, reason, score) => {
+          saveAgentVersionSnapshot(snapAgent, reason, score);
+        },
       });
 
       saveAgentDefinition(opt.finalAgent);
@@ -428,6 +444,7 @@ async function startServer() {
         results: opt.finalResults,
         iterations: opt.iterations,
         tracker,
+        documents,
       });
       saveQualityReport(agentId, qualityReport);
 
@@ -437,6 +454,27 @@ async function startServer() {
         error: err instanceof Error ? err.message : 'Re-evaluation failed.',
       });
     }
+  });
+
+  // Agent Versioning & Rollback Endpoints
+  app.get('/api/agents/:id/versions', (req, res) => {
+    const versions = loadAgentVersions(req.params.id);
+    res.json(versions);
+  });
+
+  app.post('/api/agents/:id/rollback/:version', (req, res) => {
+    const agentId = req.params.id;
+    const targetVersion = Number(req.params.version);
+    if (!Number.isFinite(targetVersion)) {
+      res.status(400).json({ error: 'Invalid version number.' });
+      return;
+    }
+    const restored = rollbackAgentToVersion(agentId, targetVersion);
+    if (!restored) {
+      res.status(404).json({ error: `Version v${targetVersion} not found for agent ${agentId}.` });
+      return;
+    }
+    res.json(loadWorkspaceBundle(agentId));
   });
 
   // Regression Mode: Upload updated/new docs to existing agent and re-run old eval set
@@ -618,14 +656,18 @@ async function startServer() {
         return;
       }
 
-      const chunks = loadChunks(agentId);
+      const rawChunks = loadChunks(agentId);
       const csvSources = loadCsvSourcesForAgent(agentId);
       const tracker = new BudgetTracker();
+      const ensured = await ensureChunkEmbeddings(rawChunks, tracker);
+      if (ensured.updated) {
+        saveChunks(agentId, ensured.chunks);
+      }
 
       const turn = await runAgentTurn({
         agent,
         question,
-        chunks,
+        chunks: ensured.chunks,
         csvSources,
         history,
         tracker,

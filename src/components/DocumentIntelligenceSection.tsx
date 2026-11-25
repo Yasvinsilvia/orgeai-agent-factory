@@ -218,6 +218,11 @@ export function DocumentIntelligenceSection({
                         {doc.error_message && (
                           <div className="text-[11px] text-red-600 mt-0.5">{doc.error_message}</div>
                         )}
+                        {doc.prompt_injection_flags && doc.prompt_injection_flags.length > 0 && (
+                          <div className="text-[11px] text-amber-700 mt-0.5 font-mono">
+                            Sanitized {doc.prompt_injection_flags.length} injection directive(s)
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );

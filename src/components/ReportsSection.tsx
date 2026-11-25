@@ -169,12 +169,18 @@ export function ReportsSection({ bundle, onBundleUpdated }: ReportsSectionProps)
           </div>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-5">
-          <div className="text-xs text-slate-500">Budget Telemetry</div>
+          <div className="text-xs text-slate-500">Budget & Cost Telemetry</div>
           <div className="mt-1.5 text-2xl font-semibold text-slate-900 tabular-nums">
             {r.budget_metrics.total_llm_calls} calls
           </div>
           <div className="mt-1 text-xs text-slate-500 tabular-nums">
-            ~{r.budget_metrics.estimated_tokens.toLocaleString()} tokens
+            {r.budget_metrics.estimated_tokens.toLocaleString()} tok
+            {typeof r.budget_metrics.estimated_cost_usd === 'number'
+              ? ` · $${r.budget_metrics.estimated_cost_usd.toFixed(4)}`
+              : ''}
+            {typeof r.budget_metrics.avg_latency_ms === 'number' && r.budget_metrics.avg_latency_ms > 0
+              ? ` · ${r.budget_metrics.avg_latency_ms}ms avg`
+              : ''}
           </div>
         </div>
       </div>
@@ -248,14 +254,14 @@ export function ReportsSection({ bundle, onBundleUpdated }: ReportsSectionProps)
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-xs">
             <div className="border-b sm:border-b-0 sm:border-r border-slate-100 pb-2 sm:pb-0 sm:pr-4">
               <div className="text-slate-500">Ghost Citations Caught</div>
               <div className="mt-1 text-lg font-semibold text-slate-900 tabular-nums">
                 {integrity.ghost_citations_caught}
               </div>
               <div className="text-[11px] text-slate-500">
-                Citations not found in retrieved chunks
+                Citations absent from retrieved chunks
               </div>
             </div>
             <div className="border-b sm:border-b-0 sm:border-r border-slate-100 pb-2 sm:pb-0 sm:pr-4">
@@ -265,6 +271,15 @@ export function ReportsSection({ bundle, onBundleUpdated }: ReportsSectionProps)
               </div>
               <div className="text-[11px] text-slate-500">
                 Numeric tokens absent from evidence/tools
+              </div>
+            </div>
+            <div className="border-b sm:border-b-0 sm:border-r border-slate-100 pb-2 sm:pb-0 sm:pr-4">
+              <div className="text-slate-500">Contradictions & Injections</div>
+              <div className="mt-1 text-lg font-semibold text-slate-900 tabular-nums">
+                {integrity.contradictions_caught ?? 0} / {integrity.injection_flags_detected ?? 0}
+              </div>
+              <div className="text-[11px] text-slate-500">
+                Policy contradictions / sanitized directives
               </div>
             </div>
             <div>

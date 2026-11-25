@@ -81,6 +81,143 @@ export function detectUngroundedNumbers(
   return Array.from(new Set(ungrounded)).slice(0, 5);
 }
 
+export function detectAnswerContradictions(
+  answer: string,
+  retrieved_evidence: RetrievedChunk[],
+  expected_facts?: string[]
+): string[] {
+  const contradictions: string[] = [];
+  const ansLower = answer.toLowerCase();
+  const isRefusal = detectRefusalInText(answer);
+  if (isRefusal) return [];
+
+  // 1. Polarity contradiction against expected facts or retrieved clauses (e.g. "not encashable" vs "is encashable")
+  const referenceStrings = [
+    ...(expected_facts ?? []),
+    ...retrieved_evidence.map((c) => c.source_text),
+  ];
+
+  const negationRules: Array<{
+    mustBeNegative: RegExp;
+    positiveAssert: RegExp;
+    label: string;
+  }> = [
+    {
+      mustBeNegative: /\bnot\s+encashable\b/i,
+      positiveAssert: /\b(?:is|are|can\s+be)\s+encashable\b|\bcan\s+(?:be\s+)?cash(?:ed)?\s+out\b/i,
+      label: 'Contradicts policy stating unused leave/items are NOT encashable.',
+    },
+    {
+      mustBeNegative: /\b(?:alcohol|usb|personal\s+usb)\b[^.]{0,40}\b(?:excluded|prohibited|forbidden|not\s+permitted|banned)\b/i,
+      positiveAssert: /\b(?:alcohol|usb)\b[^.]{0,30}\b(?:reimbursable|permitted|allowed|covered)\b/i,
+      label: 'Contradicts explicit exclusion/prohibition rule in policy.',
+    },
+    {
+      mustBeNegative: /\bdoes\s+not\s+carry\s+over\b|\bno\s+carry-?over\b/i,
+      positiveAssert: /\bcan\s+carry\s+over\b|\bcarries\s+over\b/i,
+      label: 'Contradicts non-carryover rule.',
+    },
+    {
+      mustBeNegative: /\bno\s+bulk\s+discount\b/i,
+      positiveAssert: /\b(?:offers?|includes?|receives?)\s+(?:a\s+)?(?:\d+%\s+)?bulk\s+discount\b/i,
+      label: 'Contradicts "no bulk discount" supplier clause.',
+    },
+  ];
+
+  const corpusJoined = referenceStrings.join(' \n ');
+  for (const rule of negationRules) {
+    if (rule.mustBeNegative.test(corpusJoined) && rule.positiveAssert.test(ansLower)) {
+      contradictions.push(rule.label);
+    }
+  }
+
+  // 2. Fact-level negation reversal check on expected_facts
+  if (expected_facts && expected_facts.length > 0) {
+    for (const fact of expected_facts) {
+      const fLower = fact.toLowerCase();
+      const factHasNeg = /\b(not|never|no|prohibited|excluded|cannot|without)\b/.test(fLower);
+      const coreTerms = fLower
+        .replace(/\b(not|never|no|is|are|be|the|a|an|of|to|in|for|with|and|or)\b/g, ' ')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((t) => t.length >= 4);
+      if (factHasNeg && coreTerms.length > 0) {
+        const matchedTerms = coreTerms.filter((t) => ansLower.includes(t));
+        const ansHasNeg = /\b(not|never|no|prohibited|excluded|cannot|ineligible|non-|disallowed|unallowable)\b/.test(
+          ansLower
+        );
+        if (matchedTerms.length === coreTerms.length && !ansHasNeg) {
+          contradictions.push(
+            `Polarity mismatch on expected fact "${fact}": answer omits required negation.`
+          );
+        }
+      }
+    }
+  }
+
+  return Array.from(new Set(contradictions));
+}
+
+export function computeCalibratedConfidence(params: {
+  grounding_status: TrustStatus;
+  top_relevance: number;
+  evidence_count: number;
+  tool_count: number;
+  is_refusal: boolean;
+  ghost_citations: string[];
+  ungrounded_numbers: string[];
+  contradictions: string[];
+  unsupported_claims: string[];
+}): { confidence_score: number; calibration_reason: string } {
+  let score = 50;
+  const reasons: string[] = [];
+
+  if (params.is_refusal) {
+    if (params.evidence_count === 0 || params.top_relevance < 0.25) {
+      score = 90;
+      reasons.push('High-confidence refusal: no relevant document chunks support this topic');
+    } else {
+      score = 45;
+      reasons.push('Uncertain refusal: relevant chunks existed in corpus');
+    }
+  } else {
+    const relComponent = Math.round(Math.min(1, params.top_relevance / 0.85) * 65);
+    const supportBonus = Math.min(20, params.evidence_count * 5 + params.tool_count * 7);
+    score = Math.min(98, 12 + relComponent + supportBonus);
+    reasons.push(
+      `Relevance ${Math.round(params.top_relevance * 100)}% across ${params.evidence_count} chunk(s)`
+    );
+  }
+
+  if (params.ghost_citations.length > 0) {
+    score -= 25 * params.ghost_citations.length;
+    reasons.push(`-${25 * params.ghost_citations.length} for ghost citation(s)`);
+  }
+  if (params.ungrounded_numbers.length > 0) {
+    const penalty = Math.min(35, params.ungrounded_numbers.length * 14);
+    score -= penalty;
+    reasons.push(`-${penalty} for unverified numeric value(s)`);
+  }
+  if (params.contradictions.length > 0) {
+    score -= 40;
+    reasons.push('-40 for policy contradiction');
+  }
+  if (params.grounding_status === 'YELLOW') {
+    score = Math.min(score, 74);
+    reasons.push('Capped at 74% (YELLOW partial support)');
+  } else if (params.grounding_status === 'RED' && !params.is_refusal) {
+    score = Math.min(score, 35);
+    reasons.push('Capped at 35% (RED unsupported answer)');
+  } else if (params.unsupported_claims.length > 0 && !params.is_refusal) {
+    score = Math.min(score, 68);
+  }
+
+  return {
+    confidence_score: Math.max(5, Math.min(99, Math.round(score))),
+    calibration_reason: reasons.join('; '),
+  };
+}
+
 export async function verifyAnswerWithTrustLedger(params: {
   agent_id: string;
   question: string;
@@ -109,20 +246,20 @@ export async function verifyAnswerWithTrustLedger(params: {
     params.retrieved_evidence,
     params.tool_executions
   );
+  const contradictions = detectAnswerContradictions(params.answer, params.retrieved_evidence);
 
   let unsupported_claims: string[] = [
     ...ghost_citations,
     ...(ungrounded_numbers.length > 0
       ? [`Ungrounded numeric values not matched in retrieved chunks/tools: ${ungrounded_numbers.join(', ')}`]
       : []),
+    ...contradictions,
   ];
   let grounding_status: TrustStatus = 'GREEN';
 
   if (params.retrieved_evidence.length === 0 && params.tool_executions.length === 0) {
-    if (isRefusal) {
-      grounding_status = 'RED';
-    } else {
-      grounding_status = 'RED';
+    grounding_status = 'RED';
+    if (!isRefusal) {
       unsupported_claims.push('Answer was produced with zero retrieved document evidence or tool outputs.');
     }
   } else if (isRefusal && topRelevance < 0.28) {
@@ -177,10 +314,27 @@ Return unsupported_claims as an array of specific unsupported statements (empty 
     grounding_status = isRefusal ? 'RED' : topRelevance >= 0.32 ? 'GREEN' : 'YELLOW';
   }
 
-  // Deterministic override: never report GREEN if ghost citations or ungrounded numbers were caught
-  if (grounding_status === 'GREEN' && (ghost_citations.length > 0 || ungrounded_numbers.length > 0)) {
+  // Deterministic override: never report GREEN if ghost citations, ungrounded numbers, or contradictions were caught
+  if (contradictions.length > 0) {
+    grounding_status = 'RED';
+  } else if (
+    grounding_status === 'GREEN' &&
+    (ghost_citations.length > 0 || ungrounded_numbers.length > 0)
+  ) {
     grounding_status = 'YELLOW';
   }
+
+  const calibrated = computeCalibratedConfidence({
+    grounding_status,
+    top_relevance: topRelevance,
+    evidence_count: params.retrieved_evidence.length,
+    tool_count: params.tool_executions.length,
+    is_refusal: isRefusal,
+    ghost_citations,
+    ungrounded_numbers,
+    contradictions,
+    unsupported_claims,
+  });
 
   return {
     id: `tl_${crypto.randomUUID().slice(0, 8)}`,
@@ -193,10 +347,13 @@ Return unsupported_claims as an array of specific unsupported statements (empty 
     retrieved_evidence: params.retrieved_evidence,
     evidence_relevance: Number(topRelevance.toFixed(3)),
     grounding_status,
+    confidence_score: calibrated.confidence_score,
+    calibration_reason: calibrated.calibration_reason,
     unsupported_claims,
     deterministic_checks: {
       ghost_citations,
       ungrounded_numbers,
+      contradictions,
     },
     tool_executions: params.tool_executions,
     latency_ms: params.latency_ms,

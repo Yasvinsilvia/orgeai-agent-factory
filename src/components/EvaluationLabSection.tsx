@@ -200,6 +200,18 @@ export function EvaluationLabSection({ bundle, onBundleUpdated }: EvaluationLabS
                               </span>
                             </div>
                           </div>
+                          {row.contradictions_detected && row.contradictions_detected.length > 0 && (
+                            <div className="rounded-lg border border-red-200 bg-red-50 p-2.5 text-red-800">
+                              <span className="font-semibold">Contradiction(s) Detected: </span>
+                              {row.contradictions_detected.join(' | ')}
+                            </div>
+                          )}
+                          {row.deterministic_penalties && row.deterministic_penalties.length > 0 && (
+                            <div className="text-[11px] font-mono text-amber-800">
+                              <span className="font-semibold">Deterministic Checks: </span>
+                              {row.deterministic_penalties.join(' | ')}
+                            </div>
+                          )}
                           {row.retrieved_evidence.length > 0 && (
                             <div>
                               <span className="font-semibold text-slate-800">
